@@ -1,20 +1,29 @@
 #include <ESP32CAN.h>
 #include <CAN_config.h>
-
 #include <WiFi.h>
 #include <WebServer.h>
 
-#include "webpage.h" //Our HTML webpage contents with javascripts
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH1106.h>
 
-#define LEDPIN 2
+#include "webpage.h" //Our HTML webpage contents with javascripts
+#include "icons.h"
+#include "displaysettings.h"
+
+#define BUILTIN_LED 2
 #define MAXCANMESSAGES 50
+#define OLED_SDA 21
+#define OLED_SCL 22
 
 // Update the below parameters for your project
 const char* ssid = "xxx";
-const char* password = "xxx";
+const char* password = "yyy";
 
 WiFiClient espClient;
-WebServer server(80);
+WebServer server(80);                         // Web server
+//WiFiServer tcpserver(8040);                   // TCP socket server
+Adafruit_SH1106 display(OLED_SDA, OLED_SCL);  // Display setup
 
 // tx_frame is a global variable to store the message to be sent. It is also getting sent 200ms again with off command
 // this assumes that no message is sent within 200ms of each other
@@ -194,15 +203,84 @@ void handleAccessoryOffMessage() {
   Serial.println(msgstr);
 }
 
+void displayWifiLogo(bool onoff) {
+  if (onoff) {
+    display.drawBitmap(OLED_WIFI_X, OLED_WIFI_Y, icon_wifi, 16, 16, WHITE);
+  } else {
+    display.drawBitmap(OLED_WIFI_X, OLED_WIFI_Y, icon_blank, 16, 16, BLACK);
+  }
+  display.display();
+}
+
+void displayCanAnimation(int i) {
+  display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_blank, 16, 16, BLACK);
+  switch (i) {
+    case 0: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani1, 16, 16, WHITE);
+      break;
+    case 1: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani2, 16, 16, WHITE);
+      break;
+    case 2: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani3, 16, 16, WHITE);
+      break;
+    case 3: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani4, 16, 16, WHITE);
+      break;
+    case 4: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani5, 16, 16, WHITE);
+      break;
+    case 5: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani6, 16, 16, WHITE);
+      break;
+    case 6: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani7, 16, 16, WHITE);
+      break;
+    case 7: 
+      display.drawBitmap(OLED_CANANI_X, OLED_CANANI_Y, icon_ani8, 16, 16, WHITE);
+      break;
+  }
+  display.display();
+}
+
+void displayIPAddress() {
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(OLED_IP_X,OLED_IP_Y);
+  display.println(WiFi.localIP());
+  display.display();
+}
+
+void displayRSSI() {
+  display.fillRect(17, 0, 20, 16, BLACK);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(OLED_RSSI_X,OLED_RSSI_Y);
+  display.println(WiFi.RSSI());
+  display.display();  
+}
+
+void configSaved()
+{
+  Serial.println("Configuration was updated.");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Marklin CAN-Wifi Gateway");
   
+  // initialize with the I2C addr 0x3C
+  display.begin(SH1106_SWITCHCAPVCC, 0x3C); 
+  display.clearDisplay();  
+  display.drawBitmap(-2, 0, icon_background, 128, 64, WHITE);
+  display.display();
+
+  pinMode(BUILTIN_LED, OUTPUT);
 
   uptime = 0;
   msgcount = 0;
 
-  delay(10);
+  delay(100);
   Serial.println();
   Serial.print("Connecting to wifi network");
 
@@ -211,15 +289,23 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    displayWifiLogo(uptime % 2 == 0);
+    digitalWrite(BUILTIN_LED, uptime % 2 == 0);
+    uptime++;
   }
+  uptime = 0;
+  displayWifiLogo(true);
+  digitalWrite(BUILTIN_LED, LOW);
 
   Serial.println("");
   Serial.print("Connected to ");
   Serial.println(ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+  displayIPAddress();
   Serial.print("Signal [RSSI]: ");
   Serial.println(WiFi.RSSI());
+  displayRSSI();
 
   //if (mdns.begin("poolheater", WiFi.localIP())) {
   //  Serial.println("MDNS responder started");
@@ -235,7 +321,8 @@ void setup() {
   server.on("/testsend", handleTestSend);
   server.on("/point", handlePointRequest);              
   server.on("/clearlog", handleClearLogRequest);              
-  //server.on("/relay", handleRelayCommand);   
+  //server.on("/relay", handleRelayCommand);  
+   
   server.begin();
   Serial.println("HTTP server started");
 
@@ -250,6 +337,11 @@ void setup() {
   ESP32Can.CANInit();
   Serial.println("CAN initialized");
   refreshStats();
+
+  
+  //tcpserver.begin();
+  Serial.println("TCP server started");
+  
 }
 
 void loop() {
@@ -265,13 +357,17 @@ void loop() {
     
   //receive next CAN frame from queue
   if(xQueueReceive(CAN_cfg.rx_queue,&rx_frame, 3*portTICK_PERIOD_MS)==pdTRUE){
+    digitalWrite(BUILTIN_LED, HIGH);
     String msgstr = frameToString(rx_frame);
     msgstr = "Recv - " + msgstr;
     updateMessageArray(msgstr);
     msgcount ++;
     Serial.println(msgstr);
+    displayCanAnimation(msgcount % 8);
+    digitalWrite(BUILTIN_LED, LOW);
   }
 
+ 
   // Handle HTTP server requests
   server.handleClient();
 
@@ -286,8 +382,30 @@ void loop() {
     lastSecond = millis();            
     sec++;   
     if (sec%10==0) {
-      refreshStats();         
+      refreshStats();  
+      displayRSSI();       
     }
   }   
+/*
+  // listen for client 
+  WiFiClient client = tcpserver.available(); 
+  uint8_t data[30]; 
+  if (client) {                   
+    Serial.println("new client");         
+    // check client is connected        
+    while (client.connected()) {          
+        if (client.available()) {
+            int len = client.read(data, 30);
+            if(len < 30){
+                data[len] = '\0';  
+            }else {
+                data[30] = '\0';
+            }    
+            Serial.print("client sent: ");            
+            Serial.println((char *)data); 
+        }
+    } 
+  }
+*/
     
 }
